@@ -12,7 +12,6 @@ st.set_page_config(
 )
 
 # --- CONSTANTES DE ARCHIVOS ---
-# Asegúrate de subir tus archivos a GitHub con estos nombres exactos:
 FILE_USERS = 'usuarios.csv'
 FILE_LOGS = 'registros.csv'
 
@@ -20,15 +19,28 @@ FILE_LOGS = 'registros.csv'
 
 @st.cache_data
 def load_data(users_path, logs_path):
-    """Carga los datos una sola vez para mejorar velocidad"""
+    """Carga los datos manejando errores de codificación (tildes/ñ)"""
     
     # 1. CARGAR USUARIOS
+    df_users = None
+    # Lista de codificaciones a probar (UTF-8 es estándar, Latin-1 es Excel/Windows)
+    encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
+    
+    for encoding in encodings_to_try:
+        try:
+            df_users = pd.read_csv(users_path, sep=None, engine='python', dtype=str, encoding=encoding)
+            break # Si funciona, salimos del bucle
+        except UnicodeDecodeError:
+            continue # Si falla, probamos la siguiente
+        except Exception as e:
+            return None, None, f"Error leyendo usuarios.csv: {e}"
+            
+    if df_users is None:
+        return None, None, "Error: No se pudo leer el archivo de usuarios con ninguna codificación estándar."
+
+    # Procesar columnas de usuarios
     try:
-        df_users = pd.read_csv(users_path, sep=None, engine='python', dtype=str)
-        # Normalizar columnas
         df_users.columns = df_users.columns.str.lower().str.strip()
-        
-        # Mapear columnas
         col_map = {}
         for col in df_users.columns:
             if 'nombre' in col or 'name' in col: col_map['nombre'] = col
@@ -41,19 +53,27 @@ def load_data(users_path, logs_path):
             df_users = df_users[['ID', 'Nombre', 'Area']]
         else:
             return None, None, "Error: No se encontraron columnas Nombre/ID en usuarios.csv"
-            
     except Exception as e:
-        return None, None, f"Error leyendo usuarios.csv: {e}"
+        return None, None, f"Error procesando columnas de usuarios: {e}"
 
     # 2. CARGAR REGISTROS (LOGS)
+    df_logs_raw = None
+    for encoding in encodings_to_try:
+        try:
+            df_logs_raw = pd.read_csv(logs_path, sep=None, engine='python', dtype=str, header=None, encoding=encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            return None, None, f"Error leyendo registros.csv: {e}"
+            
+    if df_logs_raw is None:
+        return None, None, "Error: No se pudo leer el archivo de registros."
+
     try:
-        # Leemos sin header primero para buscar patrones
-        df_logs_raw = pd.read_csv(logs_path, sep=None, engine='python', dtype=str, header=None)
-        
         valid_rows = []
         import re
         
-        # Convertir a string y iterar
         for index, row in df_logs_raw.astype(str).iterrows():
             line = " ".join(row.values)
             
@@ -65,18 +85,17 @@ def load_data(users_path, logs_path):
                 date_str = date_match.group(0)
                 time_str = time_match.group(0)
                 
-                # Buscar ID limpiando la fecha y hora encontradas
                 clean_line = line.replace(date_str, '').replace(time_str, '')
                 id_match = re.search(r'\b\d{1,10}\b', clean_line)
                 
                 if id_match:
-                    # Normalizar fecha a YYYY-MM-DD
                     norm_date = date_str
                     if '/' in date_str:
                         parts = re.split(r'[-/]', date_str)
-                        if len(parts[0]) == 4: # YYYY-MM-DD
+                        # Detectar si es YYYY/MM/DD o DD/MM/YYYY
+                        if len(parts[0]) == 4: 
                             norm_date = f"{parts[0]}-{parts[1]}-{parts[2]}"
-                        else: # DD-MM-YYYY
+                        else: 
                             norm_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
 
                     valid_rows.append({
@@ -90,7 +109,7 @@ def load_data(users_path, logs_path):
             return None, None, "Error: No se detectaron fechas/horas válidas en registros.csv"
             
     except Exception as e:
-        return None, None, f"Error leyendo registros.csv: {e}"
+        return None, None, f"Error procesando registros.csv: {e}"
         
     return df_users, df_logs, None
 
@@ -100,8 +119,11 @@ def get_workdays(year, month):
     return [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5]
 
 def time_to_min(t_str):
-    h, m, s = map(int, t_str.split(':'))
-    return h * 60 + m
+    try:
+        h, m, s = map(int, t_str.split(':'))
+        return h * 60 + m
+    except:
+        return 0
 
 # --- INTERFAZ DE USUARIO ---
 
@@ -111,10 +133,7 @@ st.title("📊 Sistema de Control Biométrico")
 if not os.path.exists(FILE_USERS) or not os.path.exists(FILE_LOGS):
     st.error("❌ Archivos de datos no encontrados.")
     st.markdown(f"""
-    **Instrucciones para el Administrador:**
-    Por favor sube los siguientes archivos a la raíz de tu repositorio en GitHub:
-    1. `{FILE_USERS}` (Datos de los empleados)
-    2. `{FILE_LOGS}` (Datos del biométrico)
+    **Instrucciones:** Sube `usuarios.csv` y `registros.csv` a tu repositorio GitHub.
     """)
     st.stop()
 
@@ -132,15 +151,15 @@ with st.sidebar:
     entry_limit_mins = entry_time_input.hour * 60 + entry_time_input.minute
     
     st.divider()
-    st.info(f"Datos cargados desde:\n📄 {FILE_USERS}\n📄 {FILE_LOGS}")
+    st.success(f"✅ Datos cargados correctamente")
+    st.caption(f"Empleados: {len(df_users)}")
+    st.caption(f"Registros: {len(df_logs)}")
 
 # --- LÓGICA DE NEGOCIO ---
 
-# Preprocesar fechas
 df_logs['Fecha_DT'] = pd.to_datetime(df_logs['Fecha'])
 df_logs['Mes_Str'] = df_logs['Fecha_DT'].dt.strftime('%Y-%m')
 
-# Filtros
 st.markdown("---")
 col1, col2, col3 = st.columns(3)
 
@@ -157,7 +176,6 @@ with col3:
 
 show_only_late = st.checkbox("Ver solo con retrasos", value=False)
 
-# Procesamiento principal
 current_logs = df_logs[df_logs['Mes_Str'] == selected_month].copy()
 daily_logs = current_logs.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
 
@@ -173,7 +191,6 @@ for _, user in df_users.iterrows():
     uname = user['Nombre']
     uarea = user['Area']
     
-    # Aplicar filtros
     if selected_area != "TODOS" and uarea != selected_area: continue
     if search_query:
         if search_query.lower() not in uname.lower() and search_query not in uid: continue
@@ -184,7 +201,6 @@ for _, user in df_users.iterrows():
     delay_minutes = 0
     attended_dates = set()
     
-    # Calcular asistencia
     for _, row in u_logs.iterrows():
         log_date = row['Fecha']
         log_time = row['Hora']
@@ -204,7 +220,6 @@ for _, user in df_users.iterrows():
             "Estado": "RETRASO" if is_late else "PUNTUAL"
         })
 
-    # Calcular faltas
     valid_days = [d for d in workdays if d <= today_str or selected_month < today_str[:7]]
     absences = 0
     for d in valid_days:
