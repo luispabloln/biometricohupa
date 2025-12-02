@@ -7,9 +7,50 @@ import os
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="Control Biométrico",
-    page_icon="⏰",
+    page_icon="🔐",
     layout="wide"
 )
+
+# --- SEGURIDAD Y USUARIOS ---
+# ⚠️ IMPORTANTE: Define aquí tus usuarios y contraseñas
+# Formato: "usuario": "contraseña"
+CREDENCIALES = {
+    "admin": "admin123",
+    "gerencia": "gerencia2025",
+    "rrhh": "rrhh123"
+}
+
+def check_password():
+    """Retorna True si el usuario está logueado"""
+    if 'authenticated' not in st.session_state:
+        st.session_state['authenticated'] = False
+        
+    if not st.session_state['authenticated']:
+        # Mostrar pantalla de Login
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("## 🔐 Acceso Restringido")
+            st.markdown("Por favor ingrese sus credenciales para acceder al sistema biométrico.")
+            
+            with st.form("login_form"):
+                username = st.text_input("Usuario")
+                password = st.text_input("Contraseña", type="password")
+                submit_button = st.form_submit_button("Ingresar")
+                
+                if submit_button:
+                    if username in CREDENCIALES and CREDENCIALES[username] == password:
+                        st.session_state['authenticated'] = True
+                        st.session_state['user'] = username
+                        st.success("¡Acceso correcto!")
+                        st.rerun() # Recargar la página para entrar
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
+        return False
+    return True
+
+def logout():
+    st.session_state['authenticated'] = False
+    st.rerun()
 
 # --- CONSTANTES DE ARCHIVOS ---
 FILE_USERS = 'usuarios.csv'
@@ -117,11 +158,9 @@ def load_holidays(path):
     holidays = set()
     if os.path.exists(path):
         try:
-            # Leer archivo asumiendo una columna de fechas
             df = pd.read_csv(path, header=None, dtype=str)
             for val in df[0]:
                 try:
-                    # Intentar convertir a fecha (soporta YYYY-MM-DD y DD/MM/YYYY)
                     dt = pd.to_datetime(val, dayfirst=True)
                     holidays.add(dt.strftime('%Y-%m-%d'))
                 except:
@@ -134,7 +173,6 @@ def get_workdays(year, month, holidays_set):
     """Devuelve días laborales excluyendo fines de semana y feriados"""
     num_days = calendar.monthrange(year, month)[1]
     days = [datetime(year, month, day) for day in range(1, num_days + 1)]
-    # Solo lunes a viernes Y que no estén en la lista de feriados
     return [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5 and d.strftime('%Y-%m-%d') not in holidays_set]
 
 def time_to_min(t_str):
@@ -144,19 +182,30 @@ def time_to_min(t_str):
     except:
         return 0
 
-# --- INTERFAZ DE USUARIO ---
+# --- LÓGICA PRINCIPAL DE LA APP ---
+
+# 1. Verificar Login
+if not check_password():
+    st.stop() # Si no está logueado, detiene la ejecución aquí
+
+# === A PARTIR DE AQUÍ SOLO SE EJECUTA SI ESTÁ LOGUEADO ===
+
+# 2. Barra Lateral con Logout
+with st.sidebar:
+    st.write(f"👤 Usuario: **{st.session_state.get('user', 'Admin')}**")
+    if st.button("Cerrar Sesión", type="primary"):
+        logout()
+    st.markdown("---")
 
 st.title("📊 Sistema de Control Biométrico")
 
-# --- VERIFICACIÓN DE ARCHIVOS ---
+# 3. Verificación de Archivos
 if not os.path.exists(FILE_USERS) or not os.path.exists(FILE_LOGS):
     st.error("❌ Archivos de datos no encontrados.")
-    st.markdown(f"""
-    **Instrucciones:** Sube `usuarios.csv` y `registros.csv` a tu repositorio GitHub.
-    """)
+    st.markdown(f"**Instrucciones:** Sube `usuarios.csv` y `registros.csv` a tu repositorio GitHub.")
     st.stop()
 
-# --- CARGA AUTOMÁTICA ---
+# 4. Carga de Datos
 df_users, df_logs, error_msg = load_data(FILE_USERS, FILE_LOGS)
 holidays_set = load_holidays(FILE_HOLIDAYS)
 
@@ -164,7 +213,7 @@ if error_msg:
     st.error(error_msg)
     st.stop()
 
-# --- SIDEBAR: CONFIGURACIÓN ---
+# 5. Configuración en Sidebar (continuación)
 with st.sidebar:
     st.header("⚙️ Configuración")
     entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 30))
@@ -180,8 +229,7 @@ with st.sidebar:
     else:
         st.warning("No se encontró 'feriados.csv'")
 
-# --- LÓGICA DE NEGOCIO ---
-
+# 6. Lógica de Negocio y Visualización
 df_logs['Fecha_DT'] = pd.to_datetime(df_logs['Fecha'])
 df_logs['Mes_Str'] = df_logs['Fecha_DT'].dt.strftime('%Y-%m')
 
@@ -205,7 +253,7 @@ current_logs = df_logs[df_logs['Mes_Str'] == selected_month].copy()
 daily_logs = current_logs.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
 
 year, month = map(int, selected_month.split('-'))
-workdays = get_workdays(year, month, holidays_set) # Pasamos los feriados aquí
+workdays = get_workdays(year, month, holidays_set)
 today_str = datetime.now().strftime('%Y-%m-%d')
 
 results = []
@@ -231,18 +279,12 @@ for _, user in df_users.iterrows():
         log_time = row['Hora']
         attended_dates.add(log_date)
         
-        # Si vino en feriado, cuenta como asistencia normal (o extra), no retraso
-        # Aquí asumimos que si viene en feriado se evalua puntualidad normal, 
-        # o puedes poner "delay_amt = 0" si no quieres contar retrasos en feriados.
         mins = time_to_min(log_time)
         is_late = mins > entry_limit_mins
         delay_amt = mins - entry_limit_mins if is_late else 0
         
         status = "RETRASO" if is_late else "PUNTUAL"
-        
-        # Opcional: Marcar visualmente si fue en feriado
-        if log_date in holidays_set:
-            status += " (FERIADO)"
+        if log_date in holidays_set: status += " (FERIADO)"
 
         if is_late:
             delays += 1
@@ -254,7 +296,6 @@ for _, user in df_users.iterrows():
             "Estado": status
         })
 
-    # Calcular faltas (Excluyendo feriados porque ya filtramos workdays)
     valid_days = [d for d in workdays if d <= today_str or selected_month < today_str[:7]]
     absences = 0
     for d in valid_days:
@@ -271,8 +312,6 @@ for _, user in df_users.iterrows():
         "ID": uid, "Nombre": uname, "Area": uarea,
         "Retrasos": delays, "Minutos Acumulados": delay_minutes, "Faltas": absences
     })
-
-# --- VISUALIZACIÓN ---
 
 df_resumen = pd.DataFrame(results)
 df_detalle = pd.DataFrame(detail_records)
