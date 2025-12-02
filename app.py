@@ -13,7 +13,7 @@ st.set_page_config(
 
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
-    "admin": "admin123",
+    "luisln": "Luisln2227",
     "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
 }
@@ -358,3 +358,4 @@ if not df_resumen.empty:
         )
 else:
     st.info("No se encontraron registros para mostrar.")
+
