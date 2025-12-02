@@ -216,7 +216,7 @@ if error_msg:
 # 5. Configuración en Sidebar (continuación)
 with st.sidebar:
     st.header("⚙️ Configuración")
-    entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 30))
+    entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 00))
     entry_limit_mins = entry_time_input.hour * 60 + entry_time_input.minute
     
     st.divider()
@@ -344,6 +344,7 @@ if not df_resumen.empty:
         )
 else:
     st.info("No se encontraron registros para mostrar.")
+
 
 
 
