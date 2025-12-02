@@ -14,6 +14,7 @@ st.set_page_config(
 # --- CONSTANTES DE ARCHIVOS ---
 FILE_USERS = 'usuarios.csv'
 FILE_LOGS = 'registros.csv'
+FILE_HOLIDAYS = 'feriados.csv'
 
 # --- FUNCIONES DE UTILIDAD ---
 
@@ -23,15 +24,14 @@ def load_data(users_path, logs_path):
     
     # 1. CARGAR USUARIOS
     df_users = None
-    # Lista de codificaciones a probar (UTF-8 es estándar, Latin-1 es Excel/Windows)
     encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
     
     for encoding in encodings_to_try:
         try:
             df_users = pd.read_csv(users_path, sep=None, engine='python', dtype=str, encoding=encoding)
-            break # Si funciona, salimos del bucle
+            break 
         except UnicodeDecodeError:
-            continue # Si falla, probamos la siguiente
+            continue 
         except Exception as e:
             return None, None, f"Error leyendo usuarios.csv: {e}"
             
@@ -92,7 +92,6 @@ def load_data(users_path, logs_path):
                     norm_date = date_str
                     if '/' in date_str:
                         parts = re.split(r'[-/]', date_str)
-                        # Detectar si es YYYY/MM/DD o DD/MM/YYYY
                         if len(parts[0]) == 4: 
                             norm_date = f"{parts[0]}-{parts[1]}-{parts[2]}"
                         else: 
@@ -113,10 +112,30 @@ def load_data(users_path, logs_path):
         
     return df_users, df_logs, None
 
-def get_workdays(year, month):
+def load_holidays(path):
+    """Carga lista de feriados desde CSV"""
+    holidays = set()
+    if os.path.exists(path):
+        try:
+            # Leer archivo asumiendo una columna de fechas
+            df = pd.read_csv(path, header=None, dtype=str)
+            for val in df[0]:
+                try:
+                    # Intentar convertir a fecha (soporta YYYY-MM-DD y DD/MM/YYYY)
+                    dt = pd.to_datetime(val, dayfirst=True)
+                    holidays.add(dt.strftime('%Y-%m-%d'))
+                except:
+                    continue
+        except:
+            pass
+    return holidays
+
+def get_workdays(year, month, holidays_set):
+    """Devuelve días laborales excluyendo fines de semana y feriados"""
     num_days = calendar.monthrange(year, month)[1]
     days = [datetime(year, month, day) for day in range(1, num_days + 1)]
-    return [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5]
+    # Solo lunes a viernes Y que no estén en la lista de feriados
+    return [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5 and d.strftime('%Y-%m-%d') not in holidays_set]
 
 def time_to_min(t_str):
     try:
@@ -139,6 +158,7 @@ if not os.path.exists(FILE_USERS) or not os.path.exists(FILE_LOGS):
 
 # --- CARGA AUTOMÁTICA ---
 df_users, df_logs, error_msg = load_data(FILE_USERS, FILE_LOGS)
+holidays_set = load_holidays(FILE_HOLIDAYS)
 
 if error_msg:
     st.error(error_msg)
@@ -154,6 +174,11 @@ with st.sidebar:
     st.success(f"✅ Datos cargados correctamente")
     st.caption(f"Empleados: {len(df_users)}")
     st.caption(f"Registros: {len(df_logs)}")
+    
+    if holidays_set:
+        st.info(f"🏖️ {len(holidays_set)} Feriados cargados")
+    else:
+        st.warning("No se encontró 'feriados.csv'")
 
 # --- LÓGICA DE NEGOCIO ---
 
@@ -180,7 +205,7 @@ current_logs = df_logs[df_logs['Mes_Str'] == selected_month].copy()
 daily_logs = current_logs.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
 
 year, month = map(int, selected_month.split('-'))
-workdays = get_workdays(year, month)
+workdays = get_workdays(year, month, holidays_set) # Pasamos los feriados aquí
 today_str = datetime.now().strftime('%Y-%m-%d')
 
 results = []
@@ -206,10 +231,19 @@ for _, user in df_users.iterrows():
         log_time = row['Hora']
         attended_dates.add(log_date)
         
+        # Si vino en feriado, cuenta como asistencia normal (o extra), no retraso
+        # Aquí asumimos que si viene en feriado se evalua puntualidad normal, 
+        # o puedes poner "delay_amt = 0" si no quieres contar retrasos en feriados.
         mins = time_to_min(log_time)
         is_late = mins > entry_limit_mins
         delay_amt = mins - entry_limit_mins if is_late else 0
         
+        status = "RETRASO" if is_late else "PUNTUAL"
+        
+        # Opcional: Marcar visualmente si fue en feriado
+        if log_date in holidays_set:
+            status += " (FERIADO)"
+
         if is_late:
             delays += 1
             delay_minutes += delay_amt
@@ -217,9 +251,10 @@ for _, user in df_users.iterrows():
         detail_records.append({
             "Fecha": log_date, "Empleado": uname, "Area": uarea,
             "Hora": log_time, "Retraso (min)": delay_amt if is_late else 0,
-            "Estado": "RETRASO" if is_late else "PUNTUAL"
+            "Estado": status
         })
 
+    # Calcular faltas (Excluyendo feriados porque ya filtramos workdays)
     valid_days = [d for d in workdays if d <= today_str or selected_month < today_str[:7]]
     absences = 0
     for d in valid_days:
@@ -259,9 +294,9 @@ if not df_resumen.empty:
         df_detalle = df_detalle.sort_values(by=['Fecha', 'Empleado'], ascending=[False, True])
         
         def color_status(val):
-            if val == 'RETRASO': return 'background-color: #ffcdd2; color: #b71c1c'
-            elif val == 'PUNTUAL': return 'background-color: #c8e6c9; color: #1b5e20'
-            elif val == 'AUSENTE': return 'background-color: #f5f5f5; color: #616161'
+            if 'RETRASO' in val: return 'background-color: #ffcdd2; color: #b71c1c'
+            elif 'PUNTUAL' in val: return 'background-color: #c8e6c9; color: #1b5e20'
+            elif 'AUSENTE' in val: return 'background-color: #f5f5f5; color: #616161'
             return ''
 
         st.dataframe(
