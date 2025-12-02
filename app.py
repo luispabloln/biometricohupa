@@ -15,7 +15,7 @@ st.set_page_config(
 # ⚠️ IMPORTANTE: Define aquí tus usuarios y contraseñas
 # Formato: "usuario": "contraseña"
 CREDENCIALES = {
-    "admin": "admin123",
+    "luisln": "Luisln2722",
     "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
 }
@@ -344,3 +344,4 @@ if not df_resumen.empty:
         )
 else:
     st.info("No se encontraron registros para mostrar.")
+
