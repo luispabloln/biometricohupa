@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time
 import calendar
+import os
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -10,84 +11,73 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- CONSTANTES DE ARCHIVOS ---
+# Asegúrate de subir tus archivos a GitHub con estos nombres exactos:
+FILE_USERS = 'usuarios.csv'
+FILE_LOGS = 'registros.csv'
+
 # --- FUNCIONES DE UTILIDAD ---
 
-def parse_users(file):
-    """Detecta separadores y carga usuarios"""
+@st.cache_data
+def load_data(users_path, logs_path):
+    """Carga los datos una sola vez para mejorar velocidad"""
+    
+    # 1. CARGAR USUARIOS
     try:
-        # Intentar leer detectando el motor automáticamente
-        df = pd.read_csv(file, sep=None, engine='python', dtype=str)
+        df_users = pd.read_csv(users_path, sep=None, engine='python', dtype=str)
+        # Normalizar columnas
+        df_users.columns = df_users.columns.str.lower().str.strip()
         
-        # Normalizar nombres de columnas a minúsculas
-        df.columns = df.columns.str.lower().str.strip()
-        
-        # Buscar columnas clave
+        # Mapear columnas
         col_map = {}
-        for col in df.columns:
-            if 'nombre' in col or 'name' in col:
-                col_map['nombre'] = col
-            elif 'id' in col or 'codigo' in col or 'user' in col:
-                col_map['id'] = col
-            elif 'area' in col or 'depto' in col:
-                col_map['area'] = col
+        for col in df_users.columns:
+            if 'nombre' in col or 'name' in col: col_map['nombre'] = col
+            elif 'id' in col or 'codigo' in col: col_map['id'] = col
+            elif 'area' in col or 'depto' in col: col_map['area'] = col
         
         if 'nombre' in col_map and 'id' in col_map:
-            # Renombrar para estandarizar
-            df = df.rename(columns={col_map['nombre']: 'Nombre', col_map['id']: 'ID'})
-            df['Area'] = df[col_map['area']] if 'area' in col_map else 'GENERAL'
-            return df[['ID', 'Nombre', 'Area']]
+            df_users = df_users.rename(columns={col_map['nombre']: 'Nombre', col_map['id']: 'ID'})
+            df_users['Area'] = df_users[col_map['area']] if 'area' in col_map else 'GENERAL'
+            df_users = df_users[['ID', 'Nombre', 'Area']]
         else:
-            st.error("No se encontraron columnas 'Nombre' o 'ID' en el archivo de usuarios.")
-            return pd.DataFrame()
+            return None, None, "Error: No se encontraron columnas Nombre/ID en usuarios.csv"
+            
     except Exception as e:
-        st.error(f"Error al leer usuarios: {e}")
-        return pd.DataFrame()
+        return None, None, f"Error leyendo usuarios.csv: {e}"
 
-def parse_logs(file):
-    """Detecta separadores y carga registros (logs)"""
+    # 2. CARGAR REGISTROS (LOGS)
     try:
-        # Intentar leer detectando el motor automáticamente
-        df = pd.read_csv(file, sep=None, engine='python', dtype=str, header=None)
-        
-        # Si tiene encabezados, pandas a veces los pone como fila 0 si no son obvios
-        # Vamos a intentar detectar columnas por contenido (regex)
-        
-        # Convertir todo a string
-        df = df.astype(str)
+        # Leemos sin header primero para buscar patrones
+        df_logs_raw = pd.read_csv(logs_path, sep=None, engine='python', dtype=str, header=None)
         
         valid_rows = []
-        for index, row in df.iterrows():
-            # Unir fila para buscar patrones
+        import re
+        
+        # Convertir a string y iterar
+        for index, row in df_logs_raw.astype(str).iterrows():
             line = " ".join(row.values)
             
-            # Buscar fecha (YYYY-MM-DD o DD/MM/YYYY)
-            # Regex para fechas
-            import re
+            # Buscar fecha y hora
             date_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2})|(\d{2}[-/]\d{2}[-/]\d{4})', line)
-            
-            # Buscar hora (HH:MM:SS)
             time_match = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             
             if date_match and time_match:
                 date_str = date_match.group(0)
                 time_str = time_match.group(0)
                 
-                # Buscar ID (número que no esté en la fecha/hora)
-                # Limpiamos la fecha y hora de la línea para buscar el ID restante
+                # Buscar ID limpiando la fecha y hora encontradas
                 clean_line = line.replace(date_str, '').replace(time_str, '')
-                # Buscar números restantes de 1 a 10 dígitos
                 id_match = re.search(r'\b\d{1,10}\b', clean_line)
                 
                 if id_match:
                     # Normalizar fecha a YYYY-MM-DD
+                    norm_date = date_str
                     if '/' in date_str:
                         parts = re.split(r'[-/]', date_str)
                         if len(parts[0]) == 4: # YYYY-MM-DD
                             norm_date = f"{parts[0]}-{parts[1]}-{parts[2]}"
                         else: # DD-MM-YYYY
                             norm_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
-                    else:
-                        norm_date = date_str
 
                     valid_rows.append({
                         'ID': id_match.group(0),
@@ -95,19 +85,19 @@ def parse_logs(file):
                         'Hora': time_str
                     })
         
-        return pd.DataFrame(valid_rows)
-
+        df_logs = pd.DataFrame(valid_rows)
+        if df_logs.empty:
+            return None, None, "Error: No se detectaron fechas/horas válidas en registros.csv"
+            
     except Exception as e:
-        st.error(f"Error al leer registros: {e}")
-        return pd.DataFrame()
+        return None, None, f"Error leyendo registros.csv: {e}"
+        
+    return df_users, df_logs, None
 
 def get_workdays(year, month):
-    """Devuelve una lista de fechas (strings) que son días laborales (Lun-Vie)"""
     num_days = calendar.monthrange(year, month)[1]
     days = [datetime(year, month, day) for day in range(1, num_days + 1)]
-    # Filtrar solo lunes (0) a viernes (4)
-    workdays = [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5]
-    return workdays
+    return [d.strftime('%Y-%m-%d') for d in days if d.weekday() < 5]
 
 def time_to_min(t_str):
     h, m, s = map(int, t_str.split(':'))
@@ -116,203 +106,152 @@ def time_to_min(t_str):
 # --- INTERFAZ DE USUARIO ---
 
 st.title("📊 Sistema de Control Biométrico")
-st.markdown("Carga tus archivos para analizar asistencia, retrasos y faltas.")
 
-# --- SIDEBAR: CONFIGURACIÓN Y CARGA ---
+# --- VERIFICACIÓN DE ARCHIVOS ---
+if not os.path.exists(FILE_USERS) or not os.path.exists(FILE_LOGS):
+    st.error("❌ Archivos de datos no encontrados.")
+    st.markdown(f"""
+    **Instrucciones para el Administrador:**
+    Por favor sube los siguientes archivos a la raíz de tu repositorio en GitHub:
+    1. `{FILE_USERS}` (Datos de los empleados)
+    2. `{FILE_LOGS}` (Datos del biométrico)
+    """)
+    st.stop()
+
+# --- CARGA AUTOMÁTICA ---
+df_users, df_logs, error_msg = load_data(FILE_USERS, FILE_LOGS)
+
+if error_msg:
+    st.error(error_msg)
+    st.stop()
+
+# --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
-    st.header("1. Cargar Datos")
-    
-    file_users = st.file_uploader("📂 Usuarios (CSV/Excel)", type=['csv', 'txt', 'xlsx', 'dat'])
-    file_logs = st.file_uploader("📂 Asistencia (Logs)", type=['csv', 'txt', 'dat'])
-    
-    st.header("2. Configuración")
+    st.header("⚙️ Configuración")
     entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 30))
     entry_limit_mins = entry_time_input.hour * 60 + entry_time_input.minute
     
-    st.info("Nota: Los archivos Excel (.xlsx) deben guardarse como CSV antes de subir si dan error.")
+    st.divider()
+    st.info(f"Datos cargados desde:\n📄 {FILE_USERS}\n📄 {FILE_LOGS}")
 
-# --- LÓGICA PRINCIPAL ---
+# --- LÓGICA DE NEGOCIO ---
 
-if file_users and file_logs:
-    # 1. Procesar Archivos
-    df_users = parse_users(file_users)
-    df_logs = parse_logs(file_logs)
+# Preprocesar fechas
+df_logs['Fecha_DT'] = pd.to_datetime(df_logs['Fecha'])
+df_logs['Mes_Str'] = df_logs['Fecha_DT'].dt.strftime('%Y-%m')
+
+# Filtros
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+
+available_months = sorted(df_logs['Mes_Str'].unique(), reverse=True)
+with col1:
+    selected_month = st.selectbox("📅 Mes", available_months)
+
+available_areas = ["TODOS"] + sorted(df_users['Area'].unique().tolist())
+with col2:
+    selected_area = st.selectbox("🏢 Departamento", available_areas)
     
-    if not df_users.empty and not df_logs.empty:
-        
-        # 2. Filtros
-        st.divider()
-        col1, col2, col3 = st.columns(3)
-        
-        # Filtro Mes
-        df_logs['Fecha_DT'] = pd.to_datetime(df_logs['Fecha'])
-        df_logs['Mes_Str'] = df_logs['Fecha_DT'].dt.strftime('%Y-%m')
-        available_months = sorted(df_logs['Mes_Str'].unique(), reverse=True)
-        
-        with col1:
-            selected_month = st.selectbox("📅 Seleccionar Mes", available_months)
-        
-        # Filtro Area
-        available_areas = ["TODOS"] + sorted(df_users['Area'].unique().tolist())
-        with col2:
-            selected_area = st.selectbox("🏢 Departamento", available_areas)
-            
-        with col3:
-            search_query = st.text_input("🔍 Buscar por Nombre o ID")
-        
-        show_only_late = st.checkbox("Ver solo con retrasos")
+with col3:
+    search_query = st.text_input("🔍 Buscar Empleado")
 
-        # 3. Procesamiento de Datos
+show_only_late = st.checkbox("Ver solo con retrasos", value=False)
+
+# Procesamiento principal
+current_logs = df_logs[df_logs['Mes_Str'] == selected_month].copy()
+daily_logs = current_logs.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
+
+year, month = map(int, selected_month.split('-'))
+workdays = get_workdays(year, month)
+today_str = datetime.now().strftime('%Y-%m-%d')
+
+results = []
+detail_records = []
+
+for _, user in df_users.iterrows():
+    uid = user['ID']
+    uname = user['Nombre']
+    uarea = user['Area']
+    
+    # Aplicar filtros
+    if selected_area != "TODOS" and uarea != selected_area: continue
+    if search_query:
+        if search_query.lower() not in uname.lower() and search_query not in uid: continue
+
+    u_logs = daily_logs[daily_logs['ID'] == uid]
+    
+    delays = 0
+    delay_minutes = 0
+    attended_dates = set()
+    
+    # Calcular asistencia
+    for _, row in u_logs.iterrows():
+        log_date = row['Fecha']
+        log_time = row['Hora']
+        attended_dates.add(log_date)
         
-        # Filtrar logs por mes
-        current_logs = df_logs[df_logs['Mes_Str'] == selected_month].copy()
+        mins = time_to_min(log_time)
+        is_late = mins > entry_limit_mins
+        delay_amt = mins - entry_limit_mins if is_late else 0
         
-        # Quedarse con la primera marca del día (Minima hora)
-        daily_logs = current_logs.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
+        if is_late:
+            delays += 1
+            delay_minutes += delay_amt
         
-        # Obtener días laborales del mes seleccionado
-        year, month = map(int, selected_month.split('-'))
-        workdays = get_workdays(year, month)
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        
-        # Lista para resultados
-        results = []
-        detail_records = []
+        detail_records.append({
+            "Fecha": log_date, "Empleado": uname, "Area": uarea,
+            "Hora": log_time, "Retraso (min)": delay_amt if is_late else 0,
+            "Estado": "RETRASO" if is_late else "PUNTUAL"
+        })
 
-        # Procesar por usuario
-        for _, user in df_users.iterrows():
-            uid = user['ID']
-            uname = user['Nombre']
-            uarea = user['Area']
-            
-            # Filtros de búsqueda y área antes de calcular (optimización)
-            if selected_area != "TODOS" and uarea != selected_area:
-                continue
-            if search_query:
-                if search_query.lower() not in uname.lower() and search_query not in uid:
-                    continue
-
-            # Logs de este usuario
-            u_logs = daily_logs[daily_logs['ID'] == uid]
-            
-            delays = 0
-            delay_minutes = 0
-            attended_dates = set()
-            
-            # Calcular Retrasos y llenar detalles
-            for _, row in u_logs.iterrows():
-                log_date = row['Fecha']
-                log_time = row['Hora']
-                attended_dates.add(log_date)
-                
-                mins = time_to_min(log_time)
-                is_late = mins > entry_limit_mins
-                delay_amt = mins - entry_limit_mins if is_late else 0
-                
-                if is_late:
-                    delays += 1
-                    delay_minutes += delay_amt
-                
-                status = "RETRASO" if is_late else "PUNTUAL"
-                
-                detail_records.append({
-                    "Fecha": log_date,
-                    "Empleado": uname,
-                    "ID": uid,
-                    "Area": uarea,
-                    "Hora": log_time,
-                    "Retraso (min)": delay_amt if is_late else 0,
-                    "Estado": status
-                })
-
-            # Calcular Faltas
-            # Días que debió trabajar (hasta hoy si es el mes actual)
-            valid_days = [d for d in workdays if d <= today_str or selected_month < today_str[:7]]
-            absences = 0
-            
-            for d in valid_days:
-                if d not in attended_dates:
-                    absences += 1
-                    # Agregar al detalle como Ausente
-                    detail_records.append({
-                        "Fecha": d,
-                        "Empleado": uname,
-                        "ID": uid,
-                        "Area": uarea,
-                        "Hora": "-",
-                        "Retraso (min)": 0,
-                        "Estado": "AUSENTE"
-                    })
-
-            if show_only_late and delays == 0:
-                continue
-
-            results.append({
-                "ID": uid,
-                "Nombre": uname,
-                "Area": uarea,
-                "Retrasos": delays,
-                "Minutos Acumulados": delay_minutes,
-                "Faltas": absences
+    # Calcular faltas
+    valid_days = [d for d in workdays if d <= today_str or selected_month < today_str[:7]]
+    absences = 0
+    for d in valid_days:
+        if d not in attended_dates:
+            absences += 1
+            detail_records.append({
+                "Fecha": d, "Empleado": uname, "Area": uarea,
+                "Hora": "-", "Retraso (min)": 0, "Estado": "AUSENTE"
             })
 
-        # Crear DataFrames finales
-        df_resumen = pd.DataFrame(results)
-        df_detalle = pd.DataFrame(detail_records)
+    if show_only_late and delays == 0: continue
 
-        # 4. Mostrar Métricas
-        if not df_resumen.empty:
-            total_retrasos = df_resumen['Retrasos'].sum()
-            total_minutos = df_resumen['Minutos Acumulados'].sum()
-            total_faltas = df_resumen['Faltas'].sum()
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total Retrasos", total_retrasos)
-            m2.metric("Minutos Perdidos", f"{total_minutos} min")
-            m3.metric("Faltas Estimadas", total_faltas)
+    results.append({
+        "ID": uid, "Nombre": uname, "Area": uarea,
+        "Retrasos": delays, "Minutos Acumulados": delay_minutes, "Faltas": absences
+    })
 
-            # 5. Tabla Resumen
-            st.subheader("📋 Resumen General")
-            st.dataframe(
-                df_resumen.style.apply(lambda x: ['color: red' if v > 0 else '' for v in x], subset=['Retrasos', 'Minutos Acumulados']),
-                use_container_width=True,
-                hide_index=True
-            )
+# --- VISUALIZACIÓN ---
 
-            # 6. Tabla Detalle
-            if not df_detalle.empty:
-                st.subheader("📅 Detalle Diario")
-                
-                # Ordenar detalle
-                df_detalle = df_detalle.sort_values(by=['Fecha', 'Empleado'], ascending=[False, True])
-                
-                # Colorear estado
-                def color_status(val):
-                    color = 'gray'
-                    if val == 'RETRASO': color = '#ffcccc' # Rojo claro fondo
-                    elif val == 'PUNTUAL': color = '#ccffcc' # Verde claro fondo
-                    elif val == 'AUSENTE': color = '#eeeeee'
-                    return f'background-color: {color}'
+df_resumen = pd.DataFrame(results)
+df_detalle = pd.DataFrame(detail_records)
 
-                st.dataframe(
-                    df_detalle.style.applymap(color_status, subset=['Estado']),
-                    use_container_width=True,
-                    hide_index=True
-                )
-        else:
-            st.warning("No se encontraron datos con los filtros seleccionados.")
-            
-    else:
-        st.warning("No se pudieron procesar los archivos. Verifica que el archivo de usuarios tenga columnas Nombre/ID y el de logs tenga fechas/horas.")
+if not df_resumen.empty:
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Retrasos", df_resumen['Retrasos'].sum())
+    m2.metric("Minutos Perdidos", f"{df_resumen['Minutos Acumulados'].sum()} min")
+    m3.metric("Faltas Totales", df_resumen['Faltas'].sum())
 
+    st.subheader("📋 Resumen General")
+    st.dataframe(
+        df_resumen.style.apply(lambda x: ['color: #d32f2f; font-weight: bold' if v > 0 else '' for v in x], subset=['Retrasos']),
+        use_container_width=True, hide_index=True
+    )
+
+    if not df_detalle.empty:
+        st.subheader("📅 Detalle Diario")
+        df_detalle = df_detalle.sort_values(by=['Fecha', 'Empleado'], ascending=[False, True])
+        
+        def color_status(val):
+            if val == 'RETRASO': return 'background-color: #ffcdd2; color: #b71c1c'
+            elif val == 'PUNTUAL': return 'background-color: #c8e6c9; color: #1b5e20'
+            elif val == 'AUSENTE': return 'background-color: #f5f5f5; color: #616161'
+            return ''
+
+        st.dataframe(
+            df_detalle.style.applymap(color_status, subset=['Estado']),
+            use_container_width=True, hide_index=True
+        )
 else:
-    # Pantalla de bienvenida
-    st.markdown("""
-    ### 👋 ¡Bienvenido!
-    
-    Sube tus archivos en el menú de la izquierda para comenzar.
-    
-    **Formatos soportados:**
-    * **Usuarios:** Archivo `.csv` con columnas `Nombre`, `ID`, `Area`.
-    * **Asistencia:** Archivo `.dat` o `.csv` del biométrico (detecta fechas `DD/MM/YYYY` y `YYYY-MM-DD`).
-    """)
+    st.info("No se encontraron registros para mostrar.")
