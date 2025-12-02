@@ -12,21 +12,29 @@ st.set_page_config(
 )
 
 # --- SEGURIDAD Y USUARIOS ---
-# ⚠️ IMPORTANTE: Define aquí tus usuarios y contraseñas
-# Formato: "usuario": "contraseña"
 CREDENCIALES = {
-    "luisln": "Luisln2722",
-    "joseh": "Joseh123",
-    "joseb": "Joseb123"
+    "admin": "admin123",
+    "gerencia": "gerencia2025",
+    "rrhh": "rrhh123"
 }
 
 def check_password():
-    """Retorna True si el usuario está logueado"""
+    """Retorna True si el usuario está logueado, persistiendo la sesión en URL"""
+    
+    # 1. Verificar si hay una sesión activa en los parámetros de la URL (Para sobrevivir al Refresh)
+    # Nota: Usamos query_params como un mecanismo simple de persistencia.
+    if st.query_params.get("logged_in") == "true":
+        st.session_state['authenticated'] = True
+        # Intentar recuperar el usuario si es posible, sino default a 'Usuario'
+        if 'user' not in st.session_state:
+             st.session_state['user'] = "Usuario (Reconectado)"
+
+    # 2. Inicializar estado de sesión si no existe
     if 'authenticated' not in st.session_state:
         st.session_state['authenticated'] = False
         
+    # 3. Si no está autenticado, mostrar Login
     if not st.session_state['authenticated']:
-        # Mostrar pantalla de Login
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("## 🔐 Acceso Restringido")
@@ -41,8 +49,12 @@ def check_password():
                     if username in CREDENCIALES and CREDENCIALES[username] == password:
                         st.session_state['authenticated'] = True
                         st.session_state['user'] = username
+                        
+                        # GUARDAR SESIÓN EN URL: Esto permite actualizar la página sin salir
+                        st.query_params["logged_in"] = "true"
+                        
                         st.success("¡Acceso correcto!")
-                        st.rerun() # Recargar la página para entrar
+                        st.rerun()
                     else:
                         st.error("❌ Usuario o contraseña incorrectos")
         return False
@@ -50,6 +62,8 @@ def check_password():
 
 def logout():
     st.session_state['authenticated'] = False
+    # Limpiar la URL al salir
+    st.query_params.clear()
     st.rerun()
 
 # --- CONSTANTES DE ARCHIVOS ---
@@ -192,7 +206,7 @@ if not check_password():
 
 # 2. Barra Lateral con Logout
 with st.sidebar:
-    st.write(f"👤 Usuario: **{st.session_state.get('user', 'Admin')}**")
+    st.write(f"👤 Usuario: **{st.session_state.get('user', 'Conectado')}**")
     if st.button("Cerrar Sesión", type="primary"):
         logout()
     st.markdown("---")
@@ -216,7 +230,7 @@ if error_msg:
 # 5. Configuración en Sidebar (continuación)
 with st.sidebar:
     st.header("⚙️ Configuración")
-    entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 00))
+    entry_time_input = st.time_input("Hora de Entrada Límite", value=time(8, 30))
     entry_limit_mins = entry_time_input.hour * 60 + entry_time_input.minute
     
     st.divider()
@@ -344,7 +358,3 @@ if not df_resumen.empty:
         )
 else:
     st.info("No se encontraron registros para mostrar.")
-
-
-
-
