@@ -14,8 +14,8 @@ st.set_page_config(
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
     "luisln": "Luisln2227",
-    "gerencia": "gerencia2025",
-    "rrhh": "rrhh123"
+    "joseh": "Joseh123",
+    "joseb": "Joseb123"
 }
 
 def check_password():
@@ -358,5 +358,6 @@ if not df_resumen.empty:
         )
 else:
     st.info("No se encontraron registros para mostrar.")
+
 
 
