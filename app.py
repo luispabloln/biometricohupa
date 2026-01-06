@@ -13,6 +13,7 @@ st.set_page_config(
 
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
+    "luisln": "Luisln2227",
     "admin": "admin123",
     "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
@@ -297,3 +298,4 @@ if not df_res.empty:
         st.dataframe(df_det.sort_values(['Fecha', 'Nombre'], ascending=[False, True]), use_container_width=True, hide_index=True)
 else:
     st.warning("No hay datos para mostrar.")
+
