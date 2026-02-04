@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, time
 import calendar
 import os
+import re
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -13,8 +14,6 @@ st.set_page_config(
 
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
-    "luisln": "Luisln2227",
-    "joseh": "JoseH!123",
     "admin": "admin123",
     "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
@@ -65,21 +64,24 @@ FILE_HOLIDAYS = 'feriados.csv'
 
 @st.cache_data
 def load_data(users_path, logs_path):
-    """Carga datos con limpieza de IDs y regex flexible de fechas"""
+    """Carga datos con limpieza profunda de IDs y Areas"""
     
     # 1. USUARIOS
     df_users = None
-    encodings = ['utf-8', 'latin-1', 'cp1252']
+    # 'utf-8-sig' ayuda a eliminar caracteres invisibles (BOM) al inicio del archivo
+    encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
     
     for enc in encodings:
         try:
             df_users = pd.read_csv(users_path, sep=None, engine='python', dtype=str, encoding=enc)
-            break 
+            # Validar que tenga columnas
+            if len(df_users.columns) > 1:
+                break 
         except: continue
             
     if df_users is None: return None, None, "Error leyendo usuarios.csv"
 
-    # Normalizar columnas
+    # Normalizar columnas de usuarios
     df_users.columns = df_users.columns.str.lower().str.strip()
     col_map = {}
     for col in df_users.columns:
@@ -90,8 +92,13 @@ def load_data(users_path, logs_path):
     if 'nombre' in col_map and 'id' in col_map:
         df_users = df_users.rename(columns={col_map['nombre']: 'Nombre', col_map['id']: 'ID'})
         df_users['Area'] = df_users[col_map['area']] if 'area' in col_map else 'GENERAL'
-        # LIMPIEZA CRÍTICA DE IDS (Quitar espacios)
-        df_users['ID'] = df_users['ID'].str.strip()
+        
+        # --- LIMPIEZA AGRESIVA ---
+        # Quitar espacios al principio y final de TODOS los campos clave
+        df_users['ID'] = df_users['ID'].astype(str).str.strip()
+        df_users['Nombre'] = df_users['Nombre'].astype(str).str.strip()
+        df_users['Area'] = df_users['Area'].astype(str).str.strip().str.upper() # Área en mayúsculas para unificar
+        
         df_users = df_users[['ID', 'Nombre', 'Area']]
     else:
         return None, None, "Faltan columnas Nombre/ID en usuarios.csv"
@@ -100,51 +107,69 @@ def load_data(users_path, logs_path):
     df_logs_raw = None
     for enc in encodings:
         try:
+            # Leemos sin header para procesar línea por línea manualmente si es necesario
             df_logs_raw = pd.read_csv(logs_path, sep=None, engine='python', dtype=str, header=None, encoding=enc)
-            break
+            if not df_logs_raw.empty:
+                break
         except: continue
             
     if df_logs_raw is None: return None, None, "Error leyendo registros.csv"
 
     try:
         valid_rows = []
-        import re
-        # Regex ajustado para aceptar 1 o 2 dígitos en día/mes (ej: 1/12/2025)
+        # Regex patrones
         date_pattern = re.compile(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})|(\d{1,2}[-/]\d{1,2}[-/]\d{4})')
         time_pattern = re.compile(r'(\d{1,2}:\d{2}:\d{2})')
         
         for index, row in df_logs_raw.astype(str).iterrows():
-            line = " ".join(row.values)
+            # Estrategia 1: Intentar leer columnas estructuradas (ID;Fecha;Hora)
+            # Esto evita confundir otros números con el ID
+            raw_id, raw_date, raw_time = None, None, None
             
-            date_match = date_pattern.search(line)
-            time_match = time_pattern.search(line)
+            if len(row) >= 3:
+                # Asumimos columna 0=ID, 1=Fecha, 2=Hora (formato estándar)
+                c_id, c_date, c_time = str(row[0]), str(row[1]), str(row[2])
+                
+                # Validamos si parecen datos correctos
+                if re.search(r'\d', c_id) and date_pattern.search(c_date) and time_pattern.search(c_time):
+                    raw_id = c_id
+                    raw_date = date_pattern.search(c_date).group(0)
+                    raw_time = time_pattern.search(c_time).group(0)
             
-            if date_match and time_match:
-                date_str = date_match.group(0)
-                time_str = time_match.group(0)
+            # Estrategia 2: Si falla la estructura, buscar patrones en toda la línea (backup)
+            if not raw_id:
+                line = " ".join(row.values)
+                date_match = date_pattern.search(line)
+                time_match = time_pattern.search(line)
                 
-                # Buscar ID en lo que queda de la línea
-                clean_line = line.replace(date_str, '').replace(time_str, '')
-                id_match = re.search(r'\b\d{1,10}\b', clean_line)
+                if date_match and time_match:
+                    raw_date = date_match.group(0)
+                    raw_time = time_match.group(0)
+                    # Buscar ID quitando fecha y hora
+                    clean_line = line.replace(raw_date, '').replace(raw_time, '')
+                    id_match = re.search(r'\b\d{1,10}\b', clean_line)
+                    if id_match:
+                        raw_id = id_match.group(0)
+
+            # PROCESAR DATOS ENCONTRADOS
+            if raw_id and raw_date and raw_time:
+                # Normalizar Fecha
+                norm_date = raw_date
+                if '/' in raw_date:
+                    parts = re.split(r'[-/]', raw_date)
+                    # Detección inteligente de formato:
+                    # Si parte[0] es año (4 chars) -> YYYY-MM-DD
+                    if len(parts[0]) == 4: 
+                        norm_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+                    # Si parte[2] es año (4 chars) -> DD-MM-YYYY -> YYYY-MM-DD
+                    else: 
+                        norm_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
                 
-                if id_match:
-                    user_id = id_match.group(0).strip() # Limpieza de ID
-                    
-                    # Normalizar fecha
-                    norm_date = date_str
-                    if '/' in date_str:
-                        parts = re.split(r'[-/]', date_str)
-                        # Asumir YYYY-MM-DD si el primero es año, sino DD-MM-YYYY
-                        if len(parts[0]) == 4: 
-                            norm_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                        else: 
-                            norm_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                    
-                    valid_rows.append({
-                        'ID': user_id,
-                        'Fecha': norm_date,
-                        'Hora': time_str
-                    })
+                valid_rows.append({
+                    'ID': raw_id.strip(), # Strip crítico
+                    'Fecha': norm_date,
+                    'Hora': raw_time
+                })
         
         df_logs = pd.DataFrame(valid_rows)
         if df_logs.empty: return None, None, "No se encontraron fechas válidas en registros.csv"
@@ -172,6 +197,7 @@ def get_workdays(year, month, holidays):
     for day in range(1, num_days + 1):
         d = datetime(year, month, day)
         d_str = d.strftime('%Y-%m-%d')
+        # Lunes=0, Domingo=6. Sábado(5) y Domingo(6) excluidos.
         if d.weekday() < 5 and d_str not in holidays:
             days.append(d_str)
     return days
@@ -215,9 +241,11 @@ df_logs['Mes_Str'] = df_logs['Fecha_DT'].dt.strftime('%Y-%m')
 st.title("📊 Control Biométrico")
 col1, col2, col3 = st.columns(3)
 
+# Ordenar meses descendente
 months = sorted(df_logs['Mes_Str'].unique(), reverse=True)
 with col1: selected_month = st.selectbox("📅 Mes", months)
 
+# Ordenar áreas alfabéticamente
 areas = ["TODOS"] + sorted(df_users['Area'].unique().tolist())
 with col2: selected_area = st.selectbox("🏢 Área", areas)
 
@@ -229,9 +257,12 @@ show_late = st.checkbox("Ver solo con retrasos")
 logs_month = df_logs[df_logs['Mes_Str'] == selected_month].copy()
 daily = logs_month.groupby(['ID', 'Fecha'])['Hora'].min().reset_index()
 
-# DEBUG INFO
+# DEBUG INFO (Muestra cantidad de registros procesados para dar confianza al usuario)
 with st.sidebar:
-    st.info(f"Registros encontrados para {selected_month}: **{len(daily)}**")
+    st.info(f"Registros totales en {selected_month}: **{len(daily)}**")
+    if selected_area != "TODOS":
+        users_in_area = len(df_users[df_users['Area'] == selected_area])
+        st.caption(f"Empleados en {selected_area}: {users_in_area}")
 
 year, month = map(int, selected_month.split('-'))
 workdays = get_workdays(year, month, holidays)
@@ -243,6 +274,7 @@ det = []
 for _, u in df_users.iterrows():
     uid, name, area = u['ID'], u['Nombre'], u['Area']
     
+    # Filtros
     if selected_area != "TODOS" and area != selected_area: continue
     if query and (query.lower() not in name.lower() and query not in uid): continue
 
@@ -269,12 +301,23 @@ for _, u in df_users.iterrows():
             
         det.append({"Fecha": dt, "Nombre": name, "Area": area, "Hora": tm, "Retraso": diff, "Estado": status})
 
-    # Faltas: Solo hasta el día de hoy si es el mes actual
-    # Si estamos en 2026 y miramos Dic 2025, cuenta todo el mes.
-    valid = [d for d in workdays if d <= today or selected_month < today[:7]]
+    # Cálculo de faltas inteligente
+    # Si el mes seleccionado es PASADO, contar todos los dias.
+    # Si es el mes ACTUAL, contar solo hasta HOY.
+    # Si es mes FUTURO, 0 faltas.
     
+    month_curr = datetime.now().strftime('%Y-%m')
+    
+    valid_days = []
+    if selected_month < month_curr:
+        valid_days = workdays # Mes pasado completo
+    elif selected_month == month_curr:
+        valid_days = [d for d in workdays if d <= today] # Mes actual hasta hoy
+    else:
+        valid_days = [] # Mes futuro
+
     absences = 0
-    for d in valid:
+    for d in valid_days:
         if d not in att_dates:
             absences += 1
             det.append({"Fecha": d, "Nombre": name, "Area": area, "Hora": "-", "Retraso": 0, "Estado": "AUSENTE"})
@@ -288,16 +331,19 @@ df_det = pd.DataFrame(det)
 
 if not df_res.empty:
     c1, c2, c3 = st.columns(3)
-    c1.metric("Retrasos", df_res['Retrasos'].sum())
-    c2.metric("Minutos", f"{df_res['Minutos'].sum()}")
-    c3.metric("Faltas", df_res['Faltas'].sum())
+    c1.metric("Retrasos Totales", df_res['Retrasos'].sum())
+    c2.metric("Minutos Totales", f"{df_res['Minutos'].sum()}")
+    c3.metric("Faltas Totales", df_res['Faltas'].sum())
 
-    st.dataframe(df_res.style.apply(lambda x: ['color: red' if v > 0 else '' for v in x], subset=['Retrasos']), use_container_width=True, hide_index=True)
+    st.dataframe(
+        df_res.style.apply(lambda x: ['color: red' if v > 0 else '' for v in x], subset=['Retrasos']), 
+        use_container_width=True, 
+        hide_index=True
+    )
     
     if not df_det.empty:
         st.subheader("Detalle Diario")
+        # Colorear filas de Ausente en rojo claro en el detalle si es posible, o dejar simple
         st.dataframe(df_det.sort_values(['Fecha', 'Nombre'], ascending=[False, True]), use_container_width=True, hide_index=True)
 else:
-    st.warning("No hay datos para mostrar.")
-
-
+    st.warning("No se encontraron coincidencias. Verifica que los IDs en 'usuarios.csv' coincidan exactamente con 'registros.csv'.")
