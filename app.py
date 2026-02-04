@@ -15,7 +15,7 @@ st.set_page_config(
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
     "admin": "admin123",
-    "gerencia": "gerencia2025",
+    "gerencia": "gerencia2026",
     "rrhh": "rrhh123"
 }
 
@@ -347,3 +347,4 @@ if not df_res.empty:
         st.dataframe(df_det.sort_values(['Fecha', 'Nombre'], ascending=[False, True]), use_container_width=True, hide_index=True)
 else:
     st.warning("No se encontraron coincidencias. Verifica que los IDs en 'usuarios.csv' coincidan exactamente con 'registros.csv'.")
+
