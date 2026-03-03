@@ -15,7 +15,7 @@ st.set_page_config(
 # --- SEGURIDAD Y USUARIOS ---
 CREDENCIALES = {
     "admin": "admin123",
-    "joseh": "Joseh123",
+    "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
 }
 
@@ -103,79 +103,73 @@ def load_data(users_path, logs_path):
     else:
         return None, None, "Faltan columnas Nombre/ID en usuarios.csv"
 
-    # 2. REGISTROS
-    df_logs_raw = None
+    # 2. REGISTROS (NUEVO LECTOR LÍNEA POR LÍNEA ANTIFALLOS)
+    valid_rows = []
+    # Regex mejorado para soportar horas con o sin segundos (ej. 8:02 o 8:02:00)
+    date_pattern = re.compile(r'\b(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b')
+    time_pattern = re.compile(r'\b(\d{1,2}:\d{2}(:\d{2})?)\b')
+    
+    logs_loaded = False
     for enc in encodings:
         try:
-            # Leemos sin header para procesar línea por línea manualmente si es necesario
-            df_logs_raw = pd.read_csv(logs_path, sep=None, engine='python', dtype=str, header=None, encoding=enc)
-            if not df_logs_raw.empty:
-                break
-        except: continue
-            
-    if df_logs_raw is None: return None, None, "Error leyendo registros.csv"
+            with open(logs_path, 'r', encoding=enc) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    if 'FECHA' in line.upper() or 'DATE' in line.upper() or line.upper().startswith('ID'):
+                        continue # Saltar encabezados
+                    
+                    raw_id, raw_date, raw_time = None, None, None
+                    
+                    # Estrategia 1: Separar por punto y coma o coma
+                    parts = [p.strip() for p in re.split(r'[;,]', line) if p.strip()]
+                    
+                    if len(parts) >= 3:
+                        c_id, c_date, c_time = parts[0], parts[1], parts[2]
+                        if re.search(r'\d', c_id) and date_pattern.search(c_date) and time_pattern.search(c_time):
+                            raw_id = c_id
+                            raw_date = date_pattern.search(c_date).group(0)
+                            raw_time = time_pattern.search(c_time).group(0)
+                    
+                    # Estrategia 2: Búsqueda cruda en toda la línea si falló la partición (líneas corruptas)
+                    if not raw_id:
+                        date_match = date_pattern.search(line)
+                        time_match = time_pattern.search(line)
+                        if date_match and time_match:
+                            raw_date = date_match.group(0)
+                            raw_time = time_match.group(0)
+                            clean_line = line.replace(raw_date, '').replace(raw_time, '')
+                            id_match = re.search(r'\b\d{1,15}\b', clean_line)
+                            if id_match:
+                                raw_id = id_match.group(0)
 
-    try:
-        valid_rows = []
-        # Regex patrones
-        date_pattern = re.compile(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})|(\d{1,2}[-/]\d{1,2}[-/]\d{4})')
-        time_pattern = re.compile(r'(\d{1,2}:\d{2}:\d{2})')
+                    # Procesar y guardar si se encontraron los 3 datos
+                    if raw_id and raw_date and raw_time:
+                        norm_date = raw_date
+                        if '/' in raw_date or '-' in raw_date:
+                            d_parts = re.split(r'[-/]', raw_date)
+                            if len(d_parts[0]) == 4: 
+                                norm_date = f"{d_parts[0]}-{d_parts[1].zfill(2)}-{d_parts[2].zfill(2)}"
+                            else: 
+                                norm_date = f"{d_parts[2]}-{d_parts[1].zfill(2)}-{d_parts[0].zfill(2)}"
+                        
+                        valid_rows.append({
+                            'ID': str(raw_id).strip(),
+                            'Fecha': norm_date,
+                            'Hora': raw_time
+                        })
+            
+            if valid_rows:
+                logs_loaded = True
+                break # Archivo leído correctamente, salir del bucle de encodings
+                
+        except Exception as e:
+            continue
+            
+    if not logs_loaded or not valid_rows:
+        return None, None, "No se encontraron registros válidos o hubo un error al leer el archivo."
         
-        for index, row in df_logs_raw.astype(str).iterrows():
-            # Estrategia 1: Intentar leer columnas estructuradas (ID;Fecha;Hora)
-            # Esto evita confundir otros números con el ID
-            raw_id, raw_date, raw_time = None, None, None
-            
-            if len(row) >= 3:
-                # Asumimos columna 0=ID, 1=Fecha, 2=Hora (formato estándar)
-                c_id, c_date, c_time = str(row[0]), str(row[1]), str(row[2])
-                
-                # Validamos si parecen datos correctos
-                if re.search(r'\d', c_id) and date_pattern.search(c_date) and time_pattern.search(c_time):
-                    raw_id = c_id
-                    raw_date = date_pattern.search(c_date).group(0)
-                    raw_time = time_pattern.search(c_time).group(0)
-            
-            # Estrategia 2: Si falla la estructura, buscar patrones en toda la línea (backup)
-            if not raw_id:
-                line = " ".join(row.values)
-                date_match = date_pattern.search(line)
-                time_match = time_pattern.search(line)
-                
-                if date_match and time_match:
-                    raw_date = date_match.group(0)
-                    raw_time = time_match.group(0)
-                    # Buscar ID quitando fecha y hora
-                    clean_line = line.replace(raw_date, '').replace(raw_time, '')
-                    id_match = re.search(r'\b\d{1,10}\b', clean_line)
-                    if id_match:
-                        raw_id = id_match.group(0)
-
-            # PROCESAR DATOS ENCONTRADOS
-            if raw_id and raw_date and raw_time:
-                # Normalizar Fecha
-                norm_date = raw_date
-                if '/' in raw_date:
-                    parts = re.split(r'[-/]', raw_date)
-                    # Detección inteligente de formato:
-                    # Si parte[0] es año (4 chars) -> YYYY-MM-DD
-                    if len(parts[0]) == 4: 
-                        norm_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                    # Si parte[2] es año (4 chars) -> DD-MM-YYYY -> YYYY-MM-DD
-                    else: 
-                        norm_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                
-                valid_rows.append({
-                    'ID': raw_id.strip(), # Strip crítico
-                    'Fecha': norm_date,
-                    'Hora': raw_time
-                })
-        
-        df_logs = pd.DataFrame(valid_rows)
-        if df_logs.empty: return None, None, "No se encontraron fechas válidas en registros.csv"
-            
-    except Exception as e:
-        return None, None, f"Error procesando registros: {e}"
+    df_logs = pd.DataFrame(valid_rows)
         
     return df_users, df_logs, None
 
@@ -204,7 +198,9 @@ def get_workdays(year, month, holidays):
 
 def time_to_min(t):
     try:
-        h, m, s = map(int, t.split(':'))
+        parts = str(t).split(':')
+        h = int(parts[0])
+        m = int(parts[1])
         return h * 60 + m
     except: return 0
 
@@ -347,6 +343,3 @@ if not df_res.empty:
         st.dataframe(df_det.sort_values(['Fecha', 'Nombre'], ascending=[False, True]), use_container_width=True, hide_index=True)
 else:
     st.warning("No se encontraron coincidencias. Verifica que los IDs en 'usuarios.csv' coincidan exactamente con 'registros.csv'.")
-
-
-
