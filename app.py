@@ -18,6 +18,7 @@ CREDENCIALES = {
     "gerencia": "gerencia2025",
     "rrhh": "rrhh123"
     "joseh": "joseh123"
+    
 }
 
 def check_password():
@@ -344,5 +345,6 @@ if not df_res.empty:
         st.dataframe(df_det.sort_values(['Fecha', 'Nombre'], ascending=[False, True]), use_container_width=True, hide_index=True)
 else:
     st.warning("No se encontraron coincidencias. Verifica que los IDs en 'usuarios.csv' coincidan exactamente con 'registros.csv'.")
+
 
 
