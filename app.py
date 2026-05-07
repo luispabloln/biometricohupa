@@ -226,7 +226,7 @@ if error_msg:
 
 with st.sidebar:
     st.header("⚙️ Configuración")
-    entry_time = st.time_input("Hora Entrada", value=time(8, 00))
+    entry_time = st.time_input("Hora Entrada", value=time(8, 05))
     limit_min = entry_time.hour * 60 + entry_time.minute
     st.divider()
 
